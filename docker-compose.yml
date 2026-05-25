@@ -1,0 +1,482 @@
+version: '3.8'
+
+# Sovereign Trade Infrastructure - Local Development Environment
+# 12 services: PostgreSQL, ClickHouse, Redis, Elasticsearch, Kafka, Kong,
+# Vault, Prometheus, Grafana, OPA, Go-Quorum, Keycloak, IPFS
+
+services:
+  # ========== DATABASE LAYER ==========
+
+  postgresql:
+    image: postgres:15-alpine
+    container_name: sov-postgres
+    environment:
+      POSTGRES_USER: sovereign
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sovereignpass}
+      POSTGRES_DB: sovereign_db
+      POSTGRES_INITDB_ARGS: >
+        -c max_connections=500
+        -c shared_buffers=256MB
+        -c effective_cache_size=1GB
+        -c maintenance_work_mem=64MB
+        -c log_statement=all
+        -c log_duration=on
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sovereign"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: sov-clickhouse
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: sovereign
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-sovereignpass}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./config/clickhouse.xml:/etc/clickhouse-server/config.d/custom.xml
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========== CACHE & QUEUE LAYER ==========
+
+  redis:
+    image: redis:7-alpine
+    container_name: sov-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-sovereignpass}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: sov-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: sov-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 5
+      ZOOKEEPER_INIT_LIMIT: 10
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========== OBSERVABILITY LAYER ==========
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.0
+    container_name: sov-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.10.0
+    container_name: sov-kibana
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: elastic
+      ELASTICSEARCH_PASSWORD: ""
+    ports:
+      - "5601:5601"
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sov-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--storage.tsdb.retention.time=30d"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sov-grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-sovereignpass}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========== SECURITY & POLICY LAYER ==========
+
+  vault:
+    image: vault:latest
+    container_name: sov-vault
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-sovereignroot}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    volumes:
+      - vault_data:/vault/data
+      - ./config/vault.hcl:/vault/config/vault.hcl
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8200/v1/sys/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: sov-opa
+    command: run --server --log-level debug
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./policies:/policies
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========== AUTHENTICATION LAYER ==========
+
+  keycloak:
+    image: keycloak/keycloak:latest
+    container_name: sov-keycloak
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_PASSWORD:-sovereignpass}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgresql:5432/keycloak
+      KC_DB_USERNAME: sovereign
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-sovereignpass}
+      KC_DB_SCHEMA: keycloak
+      KC_FEATURES: token_exchange,docker,impersonation
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "8080:8080"
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========== API GATEWAY LAYER ==========
+
+  kong:
+    image: kong:3.3-alpine
+    container_name: sov-kong
+    depends_on:
+      - kong-db
+      - vault
+      - opa
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-db
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:-kongpass}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_TRUSTED_IPS: 0.0.0.0/0
+      KONG_REAL_IP_HEADER: X-Forwarded-For
+      KONG_PLUGINS: bundled,oauthlib,opa,vault-auth
+    ports:
+      - "8000:8000"  # Proxy
+      - "8001:8001"  # Admin
+      - "8443:8443"  # Proxy SSL
+      - "8444:8444"  # Admin SSL
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong-db:
+    image: postgres:15-alpine
+    container_name: sov-kong-db
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: ${KONG_DB_PASSWORD:-kongpass}
+      POSTGRES_DB: kong
+    volumes:
+      - kong_db_data:/var/lib/postgresql/data
+    networks:
+      - sovereign-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong-migration:
+    image: kong:3.3-alpine
+    container_name: sov-kong-migration
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    command: kong migrations bootstrap
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-db
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:-kongpass}
+    networks:
+      - sovereign-network
+
+  # ========== BLOCKCHAIN LAYER ==========
+
+  go-quorum-validator1:
+    image: quorumengineering/quorum:latest
+    container_name: sov-quorum-v1
+    environment:
+      PRIVATE_CONFIG: /config/tm.ipc
+    ports:
+      - "21000:21000"
+      - "50400:50400"
+    volumes:
+      - ./config/quorum:/config
+      - quorum_v1_data:/data
+    networks:
+      - sovereign-network
+    command: >
+      --datadir /data
+      --nodiscover
+      --networkid 42
+      --port 21000
+      --http
+      --http.addr 0.0.0.0
+      --http.port 8545
+      --http.api admin,debug,web3,eth,txpool,miner
+      --mine
+      --miner.threads 1
+      --miner.gasprice 0
+
+  go-quorum-validator2:
+    image: quorumengineering/quorum:latest
+    container_name: sov-quorum-v2
+    environment:
+      PRIVATE_CONFIG: /config/tm.ipc
+    ports:
+      - "21001:21000"
+      - "50401:50400"
+    volumes:
+      - ./config/quorum:/config
+      - quorum_v2_data:/data
+    networks:
+      - sovereign-network
+    command: >
+      --datadir /data
+      --nodiscover
+      --networkid 42
+      --port 21000
+      --http
+      --http.addr 0.0.0.0
+      --http.port 8545
+      --http.api admin,debug,web3,eth,txpool,miner
+      --mine
+      --miner.threads 1
+      --miner.gasprice 0
+
+  go-quorum-validator3:
+    image: quorumengineering/quorum:latest
+    container_name: sov-quorum-v3
+    environment:
+      PRIVATE_CONFIG: /config/tm.ipc
+    ports:
+      - "21002:21000"
+      - "50402:50400"
+    volumes:
+      - ./config/quorum:/config
+      - quorum_v3_data:/data
+    networks:
+      - sovereign-network
+    command: >
+      --datadir /data
+      --nodiscover
+      --networkid 42
+      --port 21000
+      --http
+      --http.addr 0.0.0.0
+      --http.port 8545
+      --http.api admin,debug,web3,eth,txpool,miner
+      --mine
+      --miner.threads 1
+      --miner.gasprice 0
+
+  # ========== DECENTRALIZED STORAGE ==========
+
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: sov-ipfs
+    ports:
+      - "4001:4001"
+      - "4002:4002/udp"
+      - "5001:5001"
+      - "8080:8080"
+    volumes:
+      - ipfs_data:/data/ipfs
+    networks:
+      - sovereign-network
+    environment:
+      IPFS_PATH: /data/ipfs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/webui"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  sovereign-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  clickhouse_data:
+    driver: local
+  redis_data:
+    driver: local
+  kafka_data:
+    driver: local
+  zookeeper_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  vault_data:
+    driver: local
+  kong_db_data:
+    driver: local
+  quorum_v1_data:
+    driver: local
+  quorum_v2_data:
+    driver: local
+  quorum_v3_data:
+    driver: local
+  ipfs_data:
+    driver: local
