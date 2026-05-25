@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sovereign-trade.fullname" . }}-api-gateway
+  labels:
+    {{- include "sovereign-trade.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api-gateway
+spec:
+  replicas: {{ .Values.global.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "sovereign-trade.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "sovereign-trade.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api-gateway
+    spec:
+      serviceAccountName: {{ include "sovereign-trade.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+      - name: api-gateway
+        image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}-api-gateway:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.apiGateway.port }}
+          protocol: TCP
+        - name: admin
+          containerPort: {{ .Values.apiGateway.adminPort }}
+          protocol: TCP
+        env:
+        - name: ENVIRONMENT
+          value: {{ .Values.global.environment }}
+        - name: LOG_LEVEL
+          value: {{ .Values.global.logLevel }}
+        - name: KONG_DATABASE
+          value: postgres
+        - name: KONG_PG_HOST
+          value: {{ .Values.postgresql.host }}
+        - name: KONG_PG_PORT
+          value: "{{ .Values.postgresql.port }}"
+        - name: KONG_PG_USER
+          value: {{ .Values.postgresql.username }}
+        - name: KONG_PG_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "sovereign-trade.fullname" . }}-db-secret
+              key: password
+        livenessProbe:
+          httpGet:
+            path: /status
+            port: admin
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /status
+            port: admin
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sovereign-trade.fullname" . }}-api-gateway
+  labels:
+    {{- include "sovereign-trade.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api-gateway
+spec:
+  type: {{ .Values.apiGateway.service.type }}
+  ports:
+  - port: {{ .Values.apiGateway.service.port }}
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "sovereign-trade.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api-gateway

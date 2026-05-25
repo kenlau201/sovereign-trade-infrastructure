@@ -1,0 +1,157 @@
+# Sovereign Trade Infrastructure - Helm Values (Development)
+
+global:
+  environment: development
+  domain: localhost
+  imagePullPolicy: IfNotPresent
+  logLevel: info
+  replicaCount: 1
+
+image:
+  registry: ghcr.io
+  repository: kenlau201/sovereign-trade
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+serviceAccount:
+  create: true
+  name: sovereign-trade
+
+rbac:
+  create: true
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+postgresql:
+  enabled: true
+  host: postgresql.default.svc.cluster.local
+  port: 5432
+  username: sovereign
+  database: sovereign_db
+  poolSize: 20
+
+redis:
+  enabled: true
+  host: redis.default.svc.cluster.local
+  port: 6379
+  maxConnections: 100
+
+kafka:
+  enabled: true
+  brokers: kafka:9092
+  topics:
+    - transactions
+    - compliance-events
+    - audit-logs
+
+vault:
+  enabled: true
+  address: http://vault:8200
+  namespace: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: api.localhost
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+apiGateway:
+  name: api-gateway
+  port: 8000
+  adminPort: 8001
+  service:
+    type: ClusterIP
+    port: 8000
+
+policyEngine:
+  enabled: true
+  replicaCount: 2
+  port: 8082
+  opaPort: 8181
+
+proofEngine:
+  enabled: true
+  replicaCount: 1
+  port: 8083
+
+chainService:
+  enabled: true
+  replicaCount: 1
+  port: 8084
+
+settlementService:
+  enabled: true
+  replicaCount: 1
+  port: 8085
+
+kycService:
+  enabled: true
+  replicaCount: 1
+  port: 8086
+
+complianceService:
+  enabled: true
+  replicaCount: 1
+  port: 8087
+
+auditService:
+  enabled: true
+  replicaCount: 1
+  port: 8088
+
+orchestrationService:
+  enabled: true
+  replicaCount: 1
+  port: 8089
+
+notificationService:
+  enabled: true
+  replicaCount: 1
+  port: 8090
+
+analyticsService:
+  enabled: true
+  replicaCount: 1
+  port: 8091
+
+vaultIntegration:
+  enabled: true
+  replicaCount: 1
+  port: 8092
+
+monitoringStack:
+  enabled: true
+  prometheus:
+    retention: 15d
+    scrapeInterval: 30s
+  grafana:
+    adminPassword: sovereignpass
+
+networkPolicies:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1

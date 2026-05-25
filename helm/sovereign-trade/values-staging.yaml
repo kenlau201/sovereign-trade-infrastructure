@@ -1,0 +1,122 @@
+# Sovereign Trade Infrastructure - Helm Values (Staging)
+
+global:
+  environment: staging
+  domain: staging.sovereign-trade.dev
+  imagePullPolicy: IfNotPresent
+  logLevel: debug
+  replicaCount: 2
+
+image:
+  registry: ghcr.io
+  repository: kenlau201/sovereign-trade
+  tag: staging
+  pullPolicy: Always
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1024Mi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+serviceAccount:
+  create: true
+  name: sovereign-trade
+
+rbac:
+  create: true
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+postgresql:
+  enabled: false  # Use RDS in staging
+  host: sovereign-trade-staging-db.cxxxxx.us-east-1.rds.amazonaws.com
+  port: 5432
+  username: sovereign
+  database: sovereign_db
+  poolSize: 50
+
+redis:
+  enabled: false  # Use ElastiCache in staging
+  host: sovereign-trade-staging-cache.xxxxxx.ng.0001.use1.cache.amazonaws.com
+  port: 6379
+  maxConnections: 200
+
+kafka:
+  enabled: true
+  brokers: kafka-staging:9092
+  topics:
+    - transactions
+    - compliance-events
+    - audit-logs
+
+vault:
+  enabled: true
+  address: https://vault-staging.internal:8200
+  namespace: sovereign-trade
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: api.staging.sovereign-trade.dev
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: api-staging-tls
+      hosts:
+        - api.staging.sovereign-trade.dev
+
+apiGateway:
+  name: api-gateway
+  port: 8000
+  adminPort: 8001
+  service:
+    type: LoadBalancer
+    port: 8000
+
+policyEngine:
+  enabled: true
+  replicaCount: 3
+  port: 8082
+
+proofEngine:
+  enabled: true
+  replicaCount: 2
+  port: 8083
+
+chainService:
+  enabled: true
+  replicaCount: 2
+  port: 8084
+
+monitoringStack:
+  enabled: true
+  prometheus:
+    retention: 30d
+    scrapeInterval: 15s
+  grafana:
+    adminPassword: ${GRAFANA_PASSWORD}
+
+networkPolicies:
+  enabled: true
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

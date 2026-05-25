@@ -1,0 +1,186 @@
+# Sovereign Trade Infrastructure - Helm Values (Production)
+
+global:
+  environment: production
+  domain: sovereign-trade.com
+  imagePullPolicy: IfNotPresent
+  logLevel: warn
+  replicaCount: 3
+
+image:
+  registry: ghcr.io
+  repository: kenlau201/sovereign-trade
+  tag: ""  # Must be explicitly set
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2048Mi
+  requests:
+    cpu: 1000m
+    memory: 1024Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 70
+
+serviceAccount:
+  create: true
+  name: sovereign-trade
+
+rbac:
+  create: true
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+postgresql:
+  enabled: false  # Use RDS in production
+  host: ${PROD_RDS_ENDPOINT}
+  port: 5432
+  username: sovereign
+  database: sovereign_db
+  poolSize: 100
+  ssl: true
+  sslMode: require
+
+redis:
+  enabled: false  # Use ElastiCache in production
+  host: ${PROD_REDIS_ENDPOINT}
+  port: 6379
+  maxConnections: 500
+  tls: true
+
+kafka:
+  enabled: true
+  brokers: kafka-prod-1:9092,kafka-prod-2:9092,kafka-prod-3:9092
+  topics:
+    - transactions
+    - compliance-events
+    - audit-logs
+    - settlement-events
+
+vault:
+  enabled: true
+  address: https://vault-prod.internal:8200
+  namespace: sovereign-trade
+  tls:
+    enabled: true
+    caSecret: vault-ca
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: api.sovereign-trade.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: api-prod-tls
+      hosts:
+        - api.sovereign-trade.com
+
+apiGateway:
+  name: api-gateway
+  port: 8000
+  adminPort: 8001
+  service:
+    type: LoadBalancer
+    port: 8000
+
+policyEngine:
+  enabled: true
+  replicaCount: 5
+  port: 8082
+
+proofEngine:
+  enabled: true
+  replicaCount: 3
+  port: 8083
+
+chainService:
+  enabled: true
+  replicaCount: 4
+  port: 8084
+
+settlementService:
+  enabled: true
+  replicaCount: 3
+  port: 8085
+
+kycService:
+  enabled: true
+  replicaCount: 2
+  port: 8086
+
+complianceService:
+  enabled: true
+  replicaCount: 3
+  port: 8087
+
+auditService:
+  enabled: true
+  replicaCount: 2
+  port: 8088
+
+orchestrationService:
+  enabled: true
+  replicaCount: 3
+  port: 8089
+
+notificationService:
+  enabled: true
+  replicaCount: 2
+  port: 8090
+
+analyticsService:
+  enabled: true
+  replicaCount: 2
+  port: 8091
+
+vaultIntegration:
+  enabled: true
+  replicaCount: 2
+  port: 8092
+
+monitoringStack:
+  enabled: true
+  prometheus:
+    retention: 90d
+    scrapeInterval: 10s
+    persistence:
+      enabled: true
+      size: 100Gi
+  grafana:
+    adminPassword: ${GRAFANA_PASSWORD}
+    persistence:
+      enabled: true
+      size: 10Gi
+
+networkPolicies:
+  enabled: true
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+podSecurityPolicy:
+  enabled: true
+
+certificates:
+  enabled: true
+  issuer: letsencrypt-prod
